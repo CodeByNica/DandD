@@ -1,51 +1,141 @@
 import random
-from typing import List, Tuple
+from typing import List, Dict
+from uuid import UUID
 from app.models.models import Combatant
 
-
 class InitiativeService:
+
     @staticmethod
     def roll_d20() -> int:
-        """Бросок двадцатигранной кости d20 (1-20)."""
+        """Бросок кости."""
         return random.randint(1, 20)
 
     @classmethod
-    def calculate_and_sort(cls, combatants: List[Combatant]) -> List[Combatant]:
+    def calculate_and_sort(
+        cls,
+        combatants: List[Combatant]
+    ) -> List[Combatant]:
         """
-        1. Генерирует бросок d20 для NPC, если он еще не сделан.
-        2. Считает total_initiative = roll + modifier.
-        3. Сортирует по убыванию total_initiative, а при равенстве — по initiative_modifier.
-        4. Проставляет первичный turn_order.
+        Первичный расчёт инициативы.
         """
-        for c in combatants:
-            if c.is_npc and c.initiative_roll is None:
-                c.initiative_roll = cls.roll_d20()
+        for combatant in combatants:
 
-            if c.initiative_roll is not None:
-                c.total_initiative = c.initiative_roll + c.initiative_modifier
+            if combatant.is_npc and combatant.initiative_roll is None:
+                combatant.initiative_roll = cls.roll_d20()
 
-        # Первичная сортировка: сначала total_initiative, потом initiative_modifier
-        sorted_list = sorted(
+            if not combatant.is_npc and combatant.initiative_roll is None:
+                raise ValueError(
+                    f"Не задан бросок инициативы игрока: {combatant.name}"
+                )
+            combatant.total_initiative = (
+                combatant.initiative_roll +
+                combatant.initiative_modifier
+            )
+            combatant.tie_break_roll = None
+            combatant.tie_break_total = None
+            combatant.tie_break_resolved = False
+        sorted_combatants = sorted(
             combatants,
-            key=lambda x: (x.total_initiative if x.total_initiative is not None else -99, x.initiative_modifier),
+            key=lambda c: c.total_initiative,
             reverse=True
         )
-
-        for idx, c in enumerate(sorted_list, start=1):
-            c.turn_order = idx
-
-        return sorted_list
+        for index, combatant in enumerate(sorted_combatants, start=1):
+            combatant.turn_order = index
+        return sorted_combatants
 
     @staticmethod
-    def find_ties(combatants: List[Combatant]) -> List[List[Combatant]]:
+    def find_ties(
+        combatants: List[Combatant]
+    ) -> List[List[Combatant]]:
         """
-        Находит группы участников с полностью одинаковым total_initiative и initiative_modifier,
-        требующие внимания Мастера в модальном окне Tie-Breaker.
+        Находит только те группы, в которых ничья ещё не разрешена.
         """
-        groups = {}
-        for c in combatants:
-            key = (c.total_initiative, c.initiative_modifier)
-            groups.setdefault(key, []).append(c)
+        primary_groups = {}
+        for combatant in combatants:
+            if combatant.total_initiative is None:
+                continue
+            primary_groups.setdefault(
+                combatant.total_initiative, []
+            ).append(combatant)
+        unresolved_groups = []
+        for primary_group in primary_groups.values():
+            if len(primary_group) < 2:
+                continue
+            pending = [
+                c for c in primary_group
+                if not c.tie_break_resolved
+            ]
+            if len(pending) < 2:
+                continue
+            tie_break_groups = {}
+            for combatant in pending:
+                tie_break_groups.setdefault(
+                    combatant.tie_break_total, []
+                ).append(combatant)
+            for group in tie_break_groups.values():
+                if len(group) > 1:
+                    unresolved_groups.append(group)
+        return unresolved_groups
 
-        # Возвращаем только группы, где больше одного участника
-        return [group for group in groups.values() if len(group) > 1]
+    @classmethod
+    def resolve_ties(
+        cls,
+        combatants: List[Combatant],
+        player_rolls: Dict[UUID, int]
+    ) -> List[Combatant]:
+        """
+        Разрешает текущие ничьи.
+        Первичная инициатива не изменяется.
+        """
+        ties = cls.find_ties(combatants)
+        if not ties:
+            raise ValueError("Нет неразрешённых ничьих.")
+        expected_player_ids = {
+            c.id
+            for group in ties
+            for c in group
+            if not c.is_npc
+        }
+        if set(player_rolls.keys()) != expected_player_ids:
+            raise ValueError(
+                "Необходимо передать результаты бросков "
+                "всех игроков, участвующих в переброске."
+            )
+        for roll in player_rolls.values():
+            if not isinstance(roll, int) or not 1 <= roll <= 20:
+                raise ValueError("Результат броска должен быть от 1 до 20.")
+        for group in ties:
+            positions = sorted(
+                c.turn_order for c in group
+            )
+            for combatant in group:
+                if combatant.is_npc:
+                    roll = cls.roll_d20()
+                else:
+                    roll = player_rolls[combatant.id]
+                combatant.tie_break_roll = roll
+                combatant.tie_break_total = (
+                    roll + combatant.initiative_modifier
+                )
+            sorted_group = sorted(
+                group,
+                key=lambda c: c.tie_break_total,
+                reverse=True
+            )
+            for position, combatant in zip(positions, sorted_group):
+                combatant.turn_order = position
+            result_groups = {}
+            for combatant in group:
+                result_groups.setdefault(
+                    combatant.tie_break_total, []
+                ).append(combatant)
+            for result_group in result_groups.values():
+                if len(result_group) == 1:
+                    result_group[0].tie_break_resolved = True
+                else:
+                    for combatant in result_group:
+                        combatant.tie_break_resolved = False
+        return sorted(
+            combatants,
+            key=lambda c: c.turn_order
+        )

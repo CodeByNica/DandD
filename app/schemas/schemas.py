@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Annotated
 from pydantic import BaseModel, ConfigDict, Field
 from app.models.models import EncounterStatus, EventType
 
@@ -70,9 +70,9 @@ class EncounterRead(BaseModel):
     active_combatant_id: Optional[uuid.UUID]
     created_at: datetime
     finished_at: Optional[datetime]
-    combatants: List[CombatantRead] = []
+    combatants: List[CombatantRead] = Field(default_factory=list)
+    initiative_ties: List[List[CombatantRead]] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
-
 
 class CombatEventRead(BaseModel):
     id: uuid.UUID
@@ -92,3 +92,20 @@ class AddCharacterCombatantRequest(BaseModel):
 class AddMonsterCombatantRequest(BaseModel):
     monster_template_id: uuid.UUID
     custom_name: Optional[str] = None
+
+class CharacterUpdate(BaseModel):
+    name: str | None = None
+    max_hp: int | None = Field(default=None, gt=0)
+    initiative_modifier: int | None = None
+
+
+class MonsterTemplateUpdate(BaseModel):
+    name: str | None = None
+    max_hp: int | None = Field(default=None, gt=0)
+    initiative_modifier: int | None = None
+
+class ResolveTiesRequest(BaseModel):
+    player_rolls: dict[
+        uuid.UUID,
+        Annotated[int, Field(ge=1, le=20)]
+    ]

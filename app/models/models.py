@@ -17,6 +17,12 @@ class EncounterStatus(str, enum.Enum):
 class EncounterStatusUpdate(BaseModel):
     status: EncounterStatus
 
+class ResolveTiesRequest(BaseModel):
+    ordered_combatant_ids: List[uuid.UUID]
+
+class DamageHealRequest(BaseModel):
+    amount: int  # Положительное число для лечения, отрицательное для урона
+
 class EventType(str, enum.Enum):
     DAMAGE = "damage"
     HEAL = "heal"
@@ -94,6 +100,9 @@ class Combatant(Base):
     encounter: Mapped["Encounter"] = relationship(back_populates="combatants")
     character: Mapped[Optional["Character"]] = relationship(back_populates="combatants")
     monster_template: Mapped[Optional["MonsterTemplate"]] = relationship(back_populates="combatants")
+    tie_break_roll: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tie_break_total: Mapped[Optional[int]] = mapped_column(Integer,nullable=True)
+    tie_break_resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class CombatEvent(Base):

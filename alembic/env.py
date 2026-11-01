@@ -2,6 +2,8 @@ import asyncio
 from logging.config import fileConfig
 import os
 
+from app.database import Base
+import app.models.models
 from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import pool

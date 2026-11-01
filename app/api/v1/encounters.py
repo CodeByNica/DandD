@@ -35,11 +35,14 @@ async def _get_encounter_or_404(
     return encounter
 
 
-@router.post("/", response_model=EncounterRead, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=EncounterRead, status_code=status.HTTP_201_CREATED, description="Создание сражения")
 async def create_encounter(
     encounter_data: EncounterCreate,
     session: AsyncSession = Depends(get_async_session)
 ):
+    """
+     Создаёт новое сражение с заданным названием и начальным статусом.
+    """
     encounter = Encounter(title=encounter_data.title)
     session.add(encounter)
     await session.commit()
@@ -47,8 +50,11 @@ async def create_encounter(
     return await _get_encounter_or_404(encounter.id, session)
 
 
-@router.get("/", response_model=List[EncounterRead])
+@router.get("/", response_model=List[EncounterRead], description="	Получение списка сражений")
 async def list_encounters(session: AsyncSession = Depends(get_async_session)):
+    """
+    Возвращает список всех созданных сражений с информацией об их участниках.
+    """
     result = await session.execute(
         select(Encounter)
         .options(selectinload(Encounter.combatants))
@@ -57,15 +63,18 @@ async def list_encounters(session: AsyncSession = Depends(get_async_session)):
     return result.scalars().all()
 
 
-@router.get("/{encounter_id}", response_model=EncounterRead)
+@router.get("/{encounter_id}", response_model=EncounterRead, description="Получение сражения")
 async def get_encounter(
     encounter_id: uuid.UUID,
     session: AsyncSession = Depends(get_async_session)
 ):
+    '''
+    Возвращает подробную информацию о выбранном сражении и его участниках по идентификатору.
+    '''
     return await _get_encounter_or_404(encounter_id, session)
 
 
-@router.post("/{encounter_id}/combatants", response_model=EncounterRead)
+@router.post("/{encounter_id}/combatants", response_model=EncounterRead, description="Ручное добавление участника")
 async def add_combatant(
     encounter_id: uuid.UUID,
     combatant_data: CombatantCreate,
@@ -90,31 +99,16 @@ async def add_combatant(
 
     return await _get_encounter_or_404(encounter_id, session)
 
-
-@router.get("/{encounter_id}/export")
-async def export_encounter_json(
-    encounter_id: uuid.UUID,
-    session: AsyncSession = Depends(get_async_session)
-):
-    """Экспорт боя и его истории в JSON с использованием ExportService."""
-    encounter = await _get_encounter_or_404(encounter_id, session)
-
-    events_result = await session.execute(
-        select(CombatEvent)
-        .where(CombatEvent.encounter_id == encounter_id)
-        .order_by(CombatEvent.created_at.asc())
-    )
-    events = events_result.scalars().all()
-    return ExportService.encounter_to_json(encounter, events)
-
-
-# 1. Добавление Игрока в бой (с ручным броском d20)
-@router.post("/{encounter_id}/combatants/character", response_model=EncounterRead)
+@router.post("/{encounter_id}/combatants/character", response_model=EncounterRead, description="Добавление персонажа")
 async def add_character_to_encounter(
     encounter_id: uuid.UUID,
     body: AddCharacterCombatantRequest,
     session: AsyncSession = Depends(get_async_session)
 ):
+    '''
+    Добавляет существующего персонажа в сражение,
+    используя его характеристики и переданный результат броска инициативы.
+    '''
     encounter = await _get_encounter_or_404(encounter_id, session)
     character = await session.get(Character, body.character_id)
     if not character:
@@ -131,13 +125,16 @@ async def add_character_to_encounter(
     return await _get_encounter_or_404(encounter_id, session)
 
 
-# 2. Быстрое добавление Монстра из бестиария в 1 клик
-@router.post("/{encounter_id}/combatants/monster", response_model=EncounterRead)
+@router.post("/{encounter_id}/combatants/monster", response_model=EncounterRead, description="Добавление монстра")
 async def add_monster_to_encounter(
     encounter_id: uuid.UUID,
     body: AddMonsterCombatantRequest,
     session: AsyncSession = Depends(get_async_session)
 ):
+    '''
+    Добавляет монстра из бестиария в сражение на основе выбранного шаблона.
+    Позволяет задать индивидуальное имя участника.
+    '''
     encounter = await _get_encounter_or_404(encounter_id, session)
     template = await session.get(MonsterTemplate, body.monster_template_id)
     if not template:
@@ -154,19 +151,83 @@ async def add_monster_to_encounter(
     return await _get_encounter_or_404(encounter_id, session)
 
 
-@router.patch("/{encounter_id}/status", response_model=EncounterRead)
+@router.patch("/{encounter_id}/status", response_model=EncounterRead, description="Изменение статуса сражения.")
 async def update_encounter_status(
         encounter_id: uuid.UUID,
         body: EncounterStatusUpdate,
         session: AsyncSession = Depends(get_async_session)
 ):
+    """
+    Изменяет текущий статус сражения.
+    При завершении боя фиксирует дату и время завершения и сбрасывает активного участника.
+    """
     encounter = await session.get(Encounter, encounter_id)
     if not encounter:
         raise HTTPException(status_code=404, detail="Бой не найден")
     encounter.status = body.status
-    if body.status == EncounterStatus.COMPLETED and not encounter.finished_at:
-        encounter.finished_at = datetime.datetime.now(datetime.timezone.utc)
-    elif body.status != EncounterStatus.COMPLETED:
+    if body.status == EncounterStatus.COMPLETED:
+        if encounter.finished_at is None:
+            encounter.finished_at = datetime.datetime.now(
+                datetime.timezone.utc
+            )
+        encounter.active_combatant_id = None
+    else:
         encounter.finished_at = None
     await session.commit()
     return await _get_encounter_or_404(encounter_id, session)
+
+@router.delete(
+    "/{encounter_id}/combatants/{combatant_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    description="Удаляет участника из сражения"
+)
+async def remove_combatant(
+    encounter_id: uuid.UUID,
+    combatant_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session)
+):
+    """
+    Удаляет выбранного участника из сражения по идентификатору.
+    Исходная запись персонажа или шаблона монстра сохраняется.
+    """
+    encounter = await _get_encounter_or_404(encounter_id, session)
+
+    combatant = next(
+        (c for c in encounter.combatants if c.id == combatant_id),
+        None
+    )
+    if not combatant:
+        raise HTTPException(
+            status_code=404,
+            detail="Участник не найден в этом бою"
+        )
+
+    if encounter.active_combatant_id == combatant_id:
+        encounter.active_combatant_id = None
+    deleted_order = combatant.turn_order
+    await session.delete(combatant)
+    if deleted_order is not None:
+        for c in encounter.combatants:
+            if c.id != combatant_id and c.turn_order is not None:
+                if c.turn_order > deleted_order:
+                    c.turn_order -= 1
+
+    await session.commit()
+
+@router.get("/{encounter_id}/export", description="Экспорт сражения")
+async def export_encounter_json(
+    encounter_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session)
+):
+    """
+    Экспорт боя и его истории в JSON
+    """
+    encounter = await _get_encounter_or_404(encounter_id, session)
+
+    events_result = await session.execute(
+        select(CombatEvent)
+        .where(CombatEvent.encounter_id == encounter_id)
+        .order_by(CombatEvent.created_at.asc())
+    )
+    events = events_result.scalars().all()
+    return ExportService.encounter_to_json(encounter, events)
